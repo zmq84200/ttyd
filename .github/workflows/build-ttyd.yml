@@ -1,0 +1,86 @@
+name: Build TTYD SPK for Synology
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: '群晖 CPU 架构 (x86_64, armv8, armv7)'
+        required: true
+        default: 'x86_64'
+      dsm_version:
+        description: 'DSM 版本 (7.0, 7.1, 7.2)'
+        required: true
+        default: '7.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git libjson-c-dev libwebsockets-dev
+
+      - name: Build TTYD
+        run: |
+          git clone https://github.com/tsl0922/ttyd.git
+          cd ttyd
+          mkdir build && cd build
+          cmake ..
+          make -j$(nproc)
+          strip ttyd
+          cd ../..
+
+      - name: Create SPK structure
+        run: |
+          mkdir -p spk/package
+          cp ttyd/build/ttyd spk/package/
+          cat > spk/INFO << 'EOF'
+          package="ttyd"
+          version="1.7.2"
+          maintainer="TTYD Community"
+          maintainer_url="https://github.com/tsl0922/ttyd"
+          distributor="SynoCommunity"
+          distributor_url="https://synocommunity.com/"
+          description="TTYD - Share your terminal over the web"
+          arch="${{ github.event.inputs.arch }}"
+          dsm_version_min="${{ github.event.inputs.dsm_version }}"
+          report_url="https://github.com/hibobmaster/synology-ttyd/issues"
+          EOF
+          cat > spk/package/start-stop-status << 'EOF'
+          #!/bin/sh
+          case $1 in
+              start)
+                  /var/packages/ttyd/target/ttyd -p 7681 -W bash &
+                  echo $! > /var/run/ttyd.pid
+                  ;;
+              stop)
+                  kill $(cat /var/run/ttyd.pid)
+                  rm -f /var/run/ttyd.pid
+                  ;;
+              status)
+                  if [ -f /var/run/ttyd.pid ]; then
+                      echo "Running"
+                  else
+                      echo "Stopped"
+                  fi
+                  ;;
+          esac
+          exit 0
+          EOF
+          chmod +x spk/package/start-stop-status
+
+      - name: Pack SPK
+        run: |
+          cd spk
+          tar -czf ../ttyd.spk *
+          cd ..
+
+      - name: Upload SPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ttyd_${{ github.event.inputs.arch }}-${{ github.event.inputs.dsm_version }}
+          path: ttyd.spk
